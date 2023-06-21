@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Google Maps GeoJSON Editor</title>
+    <style>
+      #map {
+        height: 100%;
+        float: left;
+        width: 85%;
+      }
+      #geojson {
+        height: 100%;
+        float: right;
+        width: 15%;
+        border: none;
+        padding: 0;
+      }
+      html, body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      .custom-control {
+        background-color: rgba(255, 255, 255, 0.7);
+        border-radius: 4px;
+        padding: 10px;
+        margin-bottom: 10px;
+        text-align: center;
+      }
+      .custom-control:not(:last-child) {
+        margin-right: 10px;
+      }
+      .active {
+        background-color: #4285F4 !important;
+        color: white;
+      }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.4.12/ace.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.4.12/mode-json.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.4.12/theme-monokai.js"></script>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div id="geojson"></div>
+    <script>
+      var map;
+      var poly;
+      var markers = [];
+      var mode = null;
+
+      var geoJsonEditor = ace.edit("geojson");
+      geoJsonEditor.setTheme("ace/theme/monokai");
+      geoJsonEditor.session.setMode("ace/mode/json");
+      geoJsonEditor.session.setUseWrapMode(true);
+      geoJsonEditor.session.setNewLineMode("unix");
+
+      function initMap() {
+        map = new google.maps.Map(document.getElementById('map'), {
+          zoom: 3,
+          center: {lat: 25, lng: 0},
+          clickableIcons: false
+        });
+
+        poly = new google.maps.Polygon({
+          strokeColor: '#FF0000',
+          strokeOpacity: 0.8,
+          strokeWeight: 2,
+          fillColor: '#FF0000',
+          fillOpacity: 0.35,
+          map: map,
+          editable: true,
+          draggable: true
+        });
+
+        var controlDiv = document.createElement('div');
+        controlDiv.classList.add('custom-control');
+
+        var polygonControl = createControlButton('Start Polygon');
+        polygonControl.addEventListener('click', function() {
+          mode = mode === 'polygon' ? null : 'polygon';
+          toggleActiveButton(this);
+        });
+        controlDiv.appendChild(polygonControl);
+
+        var pointControl = createControlButton('Start Point');
+        pointControl.addEventListener('click', function() {
+          mode = mode === 'point' ? null : 'point';
+          toggleActiveButton(this);
+          poly.setOptions({ clickable: mode !== 'point' });
+        });
+        controlDiv.appendChild(pointControl);
+
+        var exportControl = createControlButton('Copy GeoJSON');
+        exportControl.addEventListener('click', copyToClipboard);
+        controlDiv.appendChild(exportControl);
+
+        var resetControl = createControlButton('Reset');
+        resetControl.addEventListener('click', function() {
+          poly.setPath([]);
+          markers.forEach(function(marker) {
+            marker.setMap(null);
+          });
+          markers = [];
+          toggleActiveButton();
+          updateGeoJsonEditor();
+        });
+        controlDiv.appendChild(resetControl);
+
+        map.controls[google.maps.ControlPosition.TOP_CENTER].push(controlDiv);
+
+        map.addListener('click', addLatLng);
+
+        google.maps.event.addListener(poly.getPath(), 'set_at', updateGeoJsonEditor);
+        google.maps.event.addListener(poly.getPath(), 'insert_at', updateGeoJsonEditor);
+
+        geoJsonEditor.session.on('change', updateFromGeoJsonEditor);
+      }
+
+      function addLatLng(event) {
+        if(mode === 'polygon') {
+          var path = poly.getPath();
+          path.push(event.latLng);
+          updateGeoJsonEditor();
+        } else if(mode === 'point') {
+          var marker = new google.maps.Marker({
+            position: event.latLng,
+            title: '#' + (markers.length + 1),
+            map: map,
+            draggable: true
+          });
+          markers.push(marker);
+          updateGeoJsonEditor();
+          google.maps.event.addListener(marker, 'position_changed', updateGeoJsonEditor);
+        }
+      }
+
+      function createControlButton(text) {
+        var control = document.createElement('button');
+        control.textContent = text;
+        control.style.backgroundColor = '#fff';
+        control.style.border = 'none';
+        control.style.outline = 'none';
+        control.style.width = '120px';
+        control.style.textAlign = 'center';
+        control.style.padding = '5px';
+        control.style.marginRight = '5px';
+        control.style.boxShadow = '0 2px 6px rgba(0,0,0,.3)';
+        return control;
+      }
+
+      function toggleActiveButton(btn) {
+        var activeBtn = document.querySelector('.active');
+        if(activeBtn) {
+          activeBtn.classList.remove('active');
+        }
+        if(btn && btn !== activeBtn) {
+          btn.classList.add('active');
+        }
+      }
+
+      function updateGeoJsonEditor() {
+        var geoJson = {
+          type: "Feature",
+          geometry: {
+            type: "Polygon",
+            coordinates: [[]]
+          },
+          properties: {
+            name: "Points",
+            points: []
+          }
+        };
+
+        poly.getPath().getArray().forEach(function(latLng) {
+          geoJson.geometry.coordinates[0].push([latLng.lng(), latLng.lat()]);
+        });
+
+        markers.forEach(function(marker, index) {
+          geoJson.properties.points.push([marker.getPosition().lng(), marker.getPosition().lat()]);
+        });
+
+        geoJsonEditor.setValue(JSON.stringify(geoJson, null, 2), -1);
+      }
+
+      function updateFromGeoJsonEditor() {
+        try {
+          var geoJson = JSON.parse(geoJsonEditor.getValue());
+
+          if (geoJson.geometry.type !== "Polygon") {
+            throw new Error("Geometry type must be 'Polygon'");
+          }
+
+          var coordinates = geoJson.geometry.coordinates[0];
+          poly.setPath(coordinates.map(function(coord) {
+            return {lat: coord[1], lng: coord[0]};
+          }));
+
+          markers.forEach(function(marker) {
+            marker.setMap(null);
+          });
+          markers = geoJson.properties.points.map(function(coord) {
+            var marker = new google.maps.Marker({
+              position: {lat: coord[1], lng: coord[0]},
+              map: map,
+              draggable: true
+            });
+            google.maps.event.addListener(marker, 'position_changed', updateGeoJsonEditor);
+            return marker;
+          });
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      function copyToClipboard() {
+        navigator.clipboard.writeText(geoJsonEditor.getValue());
+      }
+    </script>
+    <script async defer
+    src="https://maps.googleapis.com/maps/api/js?key=API_KEY&callback=initMap">
+    </script>
+  </body>
+</html>
